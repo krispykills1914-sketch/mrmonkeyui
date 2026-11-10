@@ -316,6 +316,9 @@ end
 function Container:ColorPicker(text, default, callback, options)
     return UI.ColorPicker(self.Frame, text, default, callback, options)
 end
+function Container:AlphaColorPicker(text, default, alpha, callback, options)
+    return UI.AlphaColorPicker(self.Frame, text, default, alpha, callback, options)
+end
 function Container:Dropdown(text, options, callback)
     return UI.Dropdown(self.Frame, text, options, callback)
 end
@@ -706,7 +709,8 @@ end
 
 --// Toggle \\--
 -- A checkbox row. Turning it on fills the box from the bottom up with the accent color; turning it off
--- drains it back down. Returns { Value, Set(value), ColorPicker(color, callback), Children() }.
+-- drains it back down. Returns { Value, Set(value), ColorPicker(color, callback, options),
+-- AlphaColorPicker(color, alpha, callback, options), Children() }.
 function UI.Toggle(parent, text, default, callback, options)
     local size = ToggleBox
     local rowHeight = Config.TextSize + 4
@@ -762,9 +766,13 @@ function UI.Toggle(parent, text, default, callback, options)
             task.spawn(callback, value)
         end
     end
-    -- Swatches on the right of this toggle's row (call it again, or chain :ColorPicker, for more).
-    function toggle:ColorPicker(color, onChange)
-        return UI.Swatch(line, color, onChange)
+    -- Swatches on the right of this toggle's row (call it again, or chain :ColorPicker /
+    -- :AlphaColorPicker, for more).
+    function toggle:ColorPicker(color, onChange, swatchOptions)
+        return UI.Swatch(line, color, onChange, swatchOptions)
+    end
+    function toggle:AlphaColorPicker(color, alpha, onChange, swatchOptions)
+        return UI.AlphaSwatch(line, color, alpha, onChange, swatchOptions)
     end
     -- A keybind on the right of this toggle's row; pressing the key flips the toggle.
     function toggle:Keybind(key, onPress)
@@ -967,10 +975,13 @@ end
 UI.ConfigWindow = configWindow
 
 --// Color picker \\--
--- A color swatch on the right of a row; clicking it opens a picker popup (saturation/value square, hue
--- bar, readout) below it. picker:ColorPicker(color, callback) adds another swatch to the same row.
--- Returns { Value, Set(color), Swatch, ColorPicker }.
-function UI.Swatch(parent, default, callback, options)
+-- Two kinds of color swatch sit on the right of a row; clicking one opens a picker popup below it:
+--   UI.Swatch      - saturation/value square, hue bar and readout. callback(color), flag saves "rrggbb".
+--   UI.AlphaSwatch - the same plus an alpha bar (opacity, 0-1). callback(color, alpha), flag saves "rrggbbaa".
+-- picker:ColorPicker / picker:AlphaColorPicker add another swatch of either kind to the same row.
+-- Returns { Value, Alpha, Set(color, alpha?), Swatch, ColorPicker, AlphaColorPicker }.
+local function makeSwatch(parent, default, alpha, callback, options)
+    local hasAlpha = type(alpha) == "number"
     local strip = accessories(parent)
     local swatch = create("TextButton", {
         Name = "Swatch",
@@ -986,7 +997,7 @@ function UI.Swatch(parent, default, callback, options)
 
     local zIndex = 20
     local popup = popupFrame("ColorPicker", swatch)
-    popup.Size = UDim2.fromOffset(178, 172)
+    popup.Size = UDim2.fromOffset(hasAlpha and 204 or 178, 172)
     theme(create("Frame", { Name = "Accent", Size = UDim2.new(1, 0, 0, 1), BorderSizePixel = 0, ZIndex = zIndex + 3, Parent = popup }), "BackgroundColor3", "Accent")
 
     local square = create("TextButton", {
@@ -1040,13 +1051,41 @@ function UI.Swatch(parent, default, callback, options)
     })
     outlined(hueCursor, "Shadow")
 
+    -- Alpha bar: the current color fading from opaque (top) to clear (bottom) over a dark backing.
+    local alphaBar, alphaFill, alphaCursor
+    if hasAlpha then
+        alphaBar = create("TextButton", {
+            Name = "Alpha",
+            Text = "",
+            AutoButtonColor = false,
+            Position = UDim2.fromOffset(178, 7),
+            Size = UDim2.fromOffset(20, 140),
+            BackgroundColor3 = Color3.fromRGB(20, 20, 22),
+            BorderSizePixel = 0,
+            ZIndex = zIndex + 1,
+            Parent = popup,
+        })
+        outlined(alphaBar, "Shadow")
+        alphaFill = create("Frame", { Size = UDim2.fromScale(1, 1), BorderSizePixel = 0, ZIndex = zIndex + 1, Parent = alphaBar })
+        create("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(0, 1), Parent = alphaFill })
+        alphaCursor = create("Frame", {
+            AnchorPoint = Vector2.new(0, 0.5),
+            Size = UDim2.new(1, 0, 0, 1),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderSizePixel = 0,
+            ZIndex = zIndex + 2,
+            Parent = alphaBar,
+        })
+        outlined(alphaCursor, "Shadow")
+    end
+
     local readout = UI.Label(popup, "", {
         Position = UDim2.fromOffset(7, 150),
         Size = UDim2.new(1, -14, 0, Config.TextSize + 4),
         ZIndex = zIndex + 1,
     }, { Slot = "SubText", Outline = true })
 
-    local picker = { Value = default or Config.Theme.Accent, Swatch = swatch, Popup = popup }
+    local picker = { Value = default or Config.Theme.Accent, Alpha = hasAlpha and math.clamp(alpha, 0, 1) or 1, Swatch = swatch, Popup = popup }
     local h, s, v = picker.Value:ToHSV()
     local function paint()
         local color = Color3.fromHSV(h, s, v)
@@ -1055,20 +1094,36 @@ function UI.Swatch(parent, default, callback, options)
         square.BackgroundColor3 = Color3.fromHSV(h, 1, 1)
         squareCursor.Position = UDim2.fromScale(s, 1 - v)
         hueCursor.Position = UDim2.fromScale(0, h)
-        readout.Text = string.format("#%s  %d, %d, %d", color:ToHex(), color.R * 255 + 0.5, color.G * 255 + 0.5, color.B * 255 + 0.5)
+        local text = string.format("#%s  %d, %d, %d", color:ToHex(), color.R * 255 + 0.5, color.G * 255 + 0.5, color.B * 255 + 0.5)
+        if hasAlpha then
+            alphaFill.BackgroundColor3 = color
+            alphaCursor.Position = UDim2.fromScale(0, 1 - picker.Alpha)
+            text ..= string.format("  %d%%", picker.Alpha * 100 + 0.5)
+        end
+        readout.Text = text
     end
     local function changed()
         paint()
         if callback then
-            task.spawn(callback, picker.Value)
+            if hasAlpha then
+                task.spawn(callback, picker.Value, picker.Alpha)
+            else
+                task.spawn(callback, picker.Value)
+            end
         end
     end
-    function picker:Set(color)
+    function picker:Set(color, alpha)
         h, s, v = color:ToHSV()
+        if hasAlpha and type(alpha) == "number" then
+            picker.Alpha = math.clamp(alpha, 0, 1)
+        end
         changed()
     end
-    function picker:ColorPicker(color, onChange)
-        return UI.Swatch(parent, color, onChange)
+    function picker:ColorPicker(color, onChange, swatchOptions)
+        return UI.Swatch(parent, color, onChange, swatchOptions)
+    end
+    function picker:AlphaColorPicker(color, startAlpha, onChange, swatchOptions)
+        return UI.AlphaSwatch(parent, color, startAlpha, onChange, swatchOptions)
     end
 
     dragArea(square, function(point)
@@ -1080,6 +1135,12 @@ function UI.Swatch(parent, default, callback, options)
         h = math.clamp((point.Y - hueBar.AbsolutePosition.Y) / hueBar.AbsoluteSize.Y, 0, 0.999)
         changed()
     end)
+    if hasAlpha then
+        dragArea(alphaBar, function(point)
+            picker.Alpha = 1 - math.clamp((point.Y - alphaBar.AbsolutePosition.Y) / alphaBar.AbsoluteSize.Y, 0, 1)
+            changed()
+        end)
+    end
     connect(swatch.MouseButton1Click, function()
         if popup.Visible then
             popup.Visible = false
@@ -1110,6 +1171,7 @@ function UI.Swatch(parent, default, callback, options)
     create("UIListLayout", { Padding = UDim.new(0, RowGap), SortOrder = Enum.SortOrder.LayoutOrder, Parent = menuList })
     UI.Button(menuList, "copy", function()
         UI.ColorClipboard = picker.Value
+        UI.AlphaClipboard = hasAlpha and picker.Alpha or nil
         local hex = `#{picker.Value:ToHex()}`
         if setclipboard then
             pcall(setclipboard, hex)
@@ -1122,7 +1184,7 @@ function UI.Swatch(parent, default, callback, options)
         if not UI.ColorClipboard then
             return UI:Notify("no color copied yet", 2)
         end
-        picker:Set(UI.ColorClipboard)
+        picker:Set(UI.ColorClipboard, UI.AlphaClipboard)
         UI:Notify(`pasted color #{UI.ColorClipboard:ToHex()}`, 2)
     end)
     connect(swatch.MouseButton2Click, function()
@@ -1135,19 +1197,35 @@ function UI.Swatch(parent, default, callback, options)
     paint()
     -- Flag: the row's container path + row name, e.g. "legit/aim assist/target colors/color".
     picker.Flag = register(parent.Parent, `{parent.Name}/color`, options, function()
-        return picker.Value:ToHex()
+        local hex = picker.Value:ToHex()
+        return hasAlpha and hex .. string.format("%02x", math.floor(picker.Alpha * 255 + 0.5)) or hex
     end, function(hex)
-        picker:Set(Color3.fromHex(hex))
+        hex = tostring(hex):gsub("^#", "")
+        local alpha = #hex == 8 and tonumber(hex:sub(7, 8), 16)
+        picker:Set(Color3.fromHex(hex:sub(1, 6)), alpha and alpha / 255)
     end)
     return picker
 end
 
--- A labelled row with a color swatch on the right. Returns the swatch's picker.
-function UI.ColorPicker(parent, text, default, callback, options)
+function UI.Swatch(parent, default, callback, options)
+    return makeSwatch(parent, default, nil, callback, options)
+end
+function UI.AlphaSwatch(parent, default, alpha, callback, options)
+    return makeSwatch(parent, default, type(alpha) == "number" and alpha or 1, callback, options)
+end
+
+-- A labelled row with a color swatch (or alpha swatch) on the right. Returns the swatch's picker.
+local function colorRow(parent, text)
     local line = row(parent, text)
     line:SetAttribute("Bottom", math.floor((Config.TextSize + 4 + Config.TextSize - 2) / 2) + 1)
     UI.Label(line, text, { Size = UDim2.new(1, -28, 1, 0), Position = UDim2.fromOffset(1, 0) }, { Outline = true })
-    return UI.Swatch(line, default, callback, options)
+    return line
+end
+function UI.ColorPicker(parent, text, default, callback, options)
+    return UI.Swatch(colorRow(parent, text), default, callback, options)
+end
+function UI.AlphaColorPicker(parent, text, default, alpha, callback, options)
+    return UI.AlphaSwatch(colorRow(parent, text), default, alpha, callback, options)
 end
 
 --// Slider \\--
